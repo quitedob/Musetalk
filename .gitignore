@@ -1,0 +1,50 @@
+# System files
+.DS_Store
+Thumbs.db
+
+# Python
+*.pyc
+*.py[cod]
+*$py.class
+**/__pycache__/
+.ipynb_checkpoints
+
+# MMCV & OpenMMLab
+mmcv/
+mmdet/
+mmpose/
+mmengine/
+
+# IDE & Editor
+.idea/
+.vscode/
+.kiro/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Logs
+*.log
+*.nul
+nul
+# MuseTalk specific
+results/
+models/
+dataset/
+datasets/
+exp_out/
+debug/
+
+# FFmpeg binaries
+ffmpeg*
+ffmprobe*
+ffplay*
+
+# Gradio
+.gradio
+
+# Claude Code
+.claude/
+CLAUDE.md

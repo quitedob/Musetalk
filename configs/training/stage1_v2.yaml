@@ -1,0 +1,113 @@
+# MuseTalk 2.0 Stage 1 Training Configuration
+# Basic reconstruction with 16-channel Flux VAE
+
+exp_name: 'musetalk_v2_stage1'
+output_dir: './exp_out/stage1_v2/'
+unet_sub_folder: musetalk
+random_init_unet: true  # Fresh start for v2.0
+whisper_path: "./models/whisper"
+pretrained_model_name_or_path: "./models"
+resume_from_checkpoint: true
+padding_pixel_mouth: 10
+
+# VAE Configuration - NEW: Flux VAE
+vae_type: "flux-vae"  # Options: "sd-vae", "flux-vae"
+vae_path: "./models/flux-vae"  # Path to Flux VAE weights
+latent_channels: 16  # Flux VAE uses 16 channels
+scale_factor: 0.3611  # Flux VAE scale factor (vs 0.18215 for SD)
+
+# v2.0 Architecture Components
+use_adapter: true  # Channel adapter for 16ch → 8ch
+use_mhc: false  # Disable in stage 1
+use_engram: false  # Disable in stage 1
+use_gated_attn: false  # Disable in stage 1
+use_dsa: false  # Disable in stage 1
+
+# Audio Processing
+audio_backend: "whisper"  # Options: "whisper", "sensevoice"
+sensevoice_model: "FunAudioLLM/SenseVoiceSmall"
+
+# Validation
+num_images_to_keep: 8
+ref_dropout_rate: 0
+syncnet_config_path: "./configs/training/syncnet.yaml"
+use_adapted_weight: false
+cropping_jaw2edge_margin_mean: 10
+cropping_jaw2edge_margin_std: 10
+crop_type: "crop_resize"
+random_margin_method: "normal"
+num_backward_frames: 16
+
+# Data Configuration
+data:
+  dataset_key: "HDTF"
+  train_bs: 16  # Reduced from 32 due to 16-channel VRAM
+  image_size: 256
+  n_sample_frames: 1  # Single frame for stage 1
+  num_workers: 8
+  audio_padding_length_left: 2
+  audio_padding_length_right: 2
+  sample_method: pose_similarity_and_mouth_dissimilarity
+  top_k_ratio: 0.51
+  contorl_face_min_size: true
+  min_face_size: 150
+
+# Loss Configuration - NEW: pMF replaces GAN
+loss_params:
+  l1_loss: 1.0
+  pmf_loss: 0.1  # NEW: Pixel MeanFlow loss
+  vgg_loss: 0.01
+  vgg_layer_weight: [1, 1, 1, 1, 1]
+  pyramid_scale: [1, 0.5, 0.25, 0.125]
+  gan_loss: 0  # DISABLED: No GAN in v2.0
+  fm_loss: [0, 0, 0, 0]  # DISABLED: No feature matching
+  sync_loss: 0  # Disabled in stage 1
+  mouth_gan_loss: 0  # DISABLED
+
+# Model Parameters
+model_params:
+  discriminator_params:
+    scales: [1]
+    block_expansion: 32
+    max_features: 512
+    num_blocks: 4
+    sn: true
+    image_channel: 3
+    estimate_jacobian: false
+
+# Discriminator (kept for compatibility, not used)
+discriminator_train_params:
+  lr: 0.000005
+  eps: 0.00000001
+  weight_decay: 0.01
+  patch_size: 1
+  betas: [0.5, 0.999]
+  epochs: 10000
+  start_gan: 999999  # Never start GAN
+
+# Solver Configuration
+solver:
+  gradient_accumulation_steps: 2  # Increased to compensate for smaller batch
+  uncond_steps: 10
+  mixed_precision: 'bf16'  # Use bfloat16 for 16-channel stability
+  enable_xformers_memory_efficient_attention: true
+  gradient_checkpointing: true
+  max_train_steps: 250000
+  max_grad_norm: 1.0
+  learning_rate: 2.0e-5
+  scale_lr: false
+  lr_warmup_steps: 1000
+  lr_scheduler: "linear"
+  use_8bit_adam: false
+  adam_beta1: 0.5
+  adam_beta2: 0.999
+  adam_weight_decay: 1.0e-2
+  adam_epsilon: 1.0e-8
+
+# Checkpointing
+total_limit: 10
+save_model_epoch_interval: 250000
+checkpointing_steps: 10000
+val_freq: 2000
+
+seed: 41

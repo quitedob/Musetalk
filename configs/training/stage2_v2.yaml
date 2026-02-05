@@ -1,0 +1,158 @@
+# MuseTalk 2.0 Stage 2 Training Configuration
+# Temporal consistency + Advanced features (mHC, Engram, Gated Attention, DSA)
+
+exp_name: 'musetalk_v2_stage2'
+output_dir: './exp_out/stage2_v2/'
+unet_sub_folder: musetalk
+random_init_unet: false  # Load stage 1 weights
+whisper_path: "./models/whisper"
+pretrained_model_name_or_path: "./models"
+stage1_checkpoint: "./exp_out/stage1_v2/"  # Path to stage 1 checkpoint
+resume_from_checkpoint: true
+padding_pixel_mouth: 10
+
+# VAE Configuration - Flux VAE
+vae_type: "flux-vae"
+vae_path: "./models/flux-vae"
+latent_channels: 16
+scale_factor: 0.3611
+
+# v2.0 Architecture Components - ALL ENABLED
+use_adapter: true
+use_mhc: true  # Enable for deeper networks
+use_engram: true  # Enable for explicit viseme memory
+use_gated_attn: true  # Enable for attention sink elimination
+use_dsa: true  # Enable for long videos
+
+# mHC Configuration
+mhc:
+  num_streams: 2
+  sinkhorn_iters: 20
+
+# Engram Configuration
+engram:
+  n_gram: 3
+  num_hashes: 8
+  memory_size: 10000
+  memory_path: "./models/engram_memory_bank.pt"
+  audio_dim: 384
+  unet_dim: 320
+
+# Gated Attention Configuration
+gated_attn:
+  gate_hidden_dim: 64
+  num_heads: 8
+
+# DSA Configuration
+dsa:
+  topk: 2048
+  use_fp8: false  # Set true if CUDA 12+ available
+
+# Audio Processing
+audio_backend: "sensevoice"  # Use SenseVoice in stage 2
+sensevoice_model: "FunAudioLLM/SenseVoiceSmall"
+use_vad: true
+
+# Validation
+num_images_to_keep: 8
+ref_dropout_rate: 0
+syncnet_config_path: "./configs/training/syncnet.yaml"
+use_adapted_weight: false
+cropping_jaw2edge_margin_mean: 10
+cropping_jaw2edge_margin_std: 10
+crop_type: "dynamic_margin_crop_resize"
+random_margin_method: "normal"
+num_backward_frames: 16
+
+# Data Configuration
+data:
+  dataset_key: "HDTF"
+  train_bs: 2  # Small batch for temporal training
+  image_size: 256
+  n_sample_frames: 16  # Multiple frames for temporal consistency
+  num_workers: 8
+  audio_padding_length_left: 2
+  audio_padding_length_right: 2
+  sample_method: pose_similarity_and_mouth_dissimilarity
+  top_k_ratio: 0.51
+  contorl_face_min_size: true
+  min_face_size: 200
+
+# Loss Configuration
+loss_params:
+  l1_loss: 1.0
+  pmf_loss: 0.1  # pMF loss
+  vgg_loss: 0.01
+  vgg_layer_weight: [1, 1, 1, 1, 1]
+  pyramid_scale: [1, 0.5, 0.25, 0.125]
+  gan_loss: 0  # DISABLED
+  fm_loss: [0, 0, 0, 0]  # DISABLED
+  sync_loss: 0.05  # Enable in stage 2
+  mouth_gan_loss: 0  # DISABLED
+  engram_consistency_loss: 0.05  # NEW: Engram consistency
+
+# Model Parameters
+model_params:
+  discriminator_params:
+    scales: [1]
+    block_expansion: 32
+    max_features: 512
+    num_blocks: 4
+    sn: true
+    image_channel: 3
+    estimate_jacobian: false
+
+# Discriminator (not used)
+discriminator_train_params:
+  lr: 0.000005
+  eps: 0.00000001
+  weight_decay: 0.01
+  patch_size: 1
+  betas: [0.5, 0.999]
+  epochs: 10000
+  start_gan: 999999
+
+# Solver Configuration
+solver:
+  gradient_accumulation_steps: 8  # Compensate for small batch
+  uncond_steps: 10
+  mixed_precision: 'bf16'
+  enable_xformers_memory_efficient_attention: true
+  gradient_checkpointing: true
+  max_train_steps: 250000
+  max_grad_norm: 1.0
+  learning_rate: 5.0e-6  # Lower LR for fine-tuning
+  scale_lr: false
+  lr_warmup_steps: 1000
+  lr_scheduler: "linear"
+  use_8bit_adam: false
+  adam_beta1: 0.5
+  adam_beta2: 0.999
+  adam_weight_decay: 1.0e-2
+  adam_epsilon: 1.0e-8
+
+# Gradual Unfreezing Schedule
+unfreeze_schedule:
+  - phase: "engram_gate_only"
+    steps: 5000
+    freeze: ["unet.down_blocks", "unet.mid_block", "unet.up_blocks"]
+    train: ["engram", "adapter", "gate"]
+    lr_multiplier: 5.0
+  - phase: "attention_layers"
+    steps: 15000
+    freeze: ["unet.mid_block"]
+    train: ["engram", "adapter", "gate", "attn"]
+    lr_multiplier: 2.0
+  - phase: "full_network"
+    steps: 250000
+    freeze: []
+    train: [".*"]
+    lr_multiplier: 1.0
+
+# Checkpointing
+total_limit: 10
+save_model_epoch_interval: 250000
+checkpointing_steps: 2000
+val_freq: 2000
+
+seed: 41

@@ -1,0 +1,38 @@
+# SenseVoice Audio Configuration for MuseTalk 2.0 Inference
+
+# Audio Backend Selection
+audio:
+  backend: "sensevoice"  # Options: "whisper", "sensevoice"
+  
+  # SenseVoice Configuration
+  sensevoice:
+    model_name: "FunAudioLLM/SenseVoiceSmall"
+    use_vad: true  # Voice Activity Detection
+    vad_max_segment_time: 30000  # Max segment in ms
+    extract_emotion: false  # Optional: extract emotion for conditional generation
+    detect_language: "auto"  # auto, zh, en, yue, ja, ko, nospeech
+    
+  # Whisper Fallback Configuration
+  whisper:
+    model_path: "./models/whisper"
+    model_size: "tiny"  # tiny, base, small, medium, large
+    
+# Feature Extraction
+features:
+  dimension: 384  # Output feature dimension (Whisper-compatible)
+  sample_rate: 16000  # Audio sample rate
+  hop_length: 160  # Hop length for mel extraction
+  n_mels: 80  # Number of mel bins
+  
+# Chunking Configuration
+chunking:
+  chunk_duration: 30.0  # Seconds per chunk
+  overlap: 0.5  # Overlap between chunks (seconds)
+  fps: 25  # Video frame rate for alignment
+
+# Performance
+performance:
+  batch_size: 60  # Batch size for SenseVoice
+  merge_vad: true  # Merge VAD segments
+  merge_length: 15  # Max merge length in seconds
+  use_itn: true  # Inverse text normalization

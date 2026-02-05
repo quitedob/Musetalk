@@ -1,0 +1,43 @@
+hdtf:
+  data_dir: "./datasets/HDTF"
+  source_dir: "./datasets/HDTF/source"
+  output_dir: "./datasets/HDTF/processed"
+  steps:
+    convert: true
+    segment: true
+    audio: true
+    analyze: true
+    metadata: true
+    splits: true
+  batch_size: 8
+  use_checkpoint: true
+  clear_cache_every: 10
+
+vfhq:
+  base_path: "./datasets/VFHQ-Test"
+  output_dir: "./datasets/VFHQ-Test/processed"
+  strategy: "complete_only"
+  subset_percent: 100
+  convert_to_video: true
+  fps: 25
+  crf: 15
+  codec: "libx264"
+  steps:
+    convert_to_video: true
+    convert: true
+    segment: false
+    audio: true
+    analyze: true
+    metadata: true
+  batch_size: 4
+
+system:
+  ffmpeg_path: "ffmpeg"
+  gpu_memory_limit: 16
+  ram_limit: 64
+  temp_dir: "./temp"
+  log_level: "INFO"
+  log_file: "./logs/processor.log"
+  save_logs: true
+  max_workers: 2
+  enable_progress: true
