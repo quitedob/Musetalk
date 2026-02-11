@@ -18,3 +18,5 @@ imageio[ffmpeg]
 omegaconf
 ffmpeg-python
 moviepy
+funasr
+pandas

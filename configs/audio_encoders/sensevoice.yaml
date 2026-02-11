@@ -1,0 +1,8 @@
+# SenseVoice 音频编码器配置。  
+encoder_type: "sensevoice"  # 音频后端类型。  
+device: "cuda"  # 运行设备。  
+model_name: "FunAudioLLM/SenseVoiceSmall"  # SenseVoice 模型名。  
+use_vad: true  # 是否启用 VAD。  
+target_dim: 384  # 输出目标维度。  
+audio_padding_length_left: 2  # 左侧上下文窗口。  
+audio_padding_length_right: 2  # 右侧上下文窗口。  

@@ -3,6 +3,7 @@ import json
 import logging
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from diffusers import AutoencoderKL, UNet2DConditionModel
@@ -44,6 +45,29 @@ class Net(nn.Module):
         return model_pred
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_binary_prf1(pred_images, target_images, region_mask, threshold=0.5):
+    """计算二值化 Precision/Recall/F1 指标。"""
+    # 将输入从 [-1,1] 映射到 [0,1]。  
+    pred = (pred_images.clamp(-1, 1) + 1.0) / 2.0
+    target = (target_images.clamp(-1, 1) + 1.0) / 2.0
+    # 转为灰度用于阈值分割。  
+    pred_gray = pred.mean(dim=1, keepdim=True)
+    target_gray = target.mean(dim=1, keepdim=True)
+    # 仅在口型区域统计。  
+    mask = (region_mask > 0.5).float()
+    pred_bin = (pred_gray > threshold).float() * mask
+    target_bin = (target_gray > threshold).float() * mask
+    # 计算 TP/FP/FN。  
+    tp = (pred_bin * target_bin).sum()
+    fp = (pred_bin * (1.0 - target_bin)).sum()
+    fn = ((1.0 - pred_bin) * target_bin).sum()
+    # 计算三项指标。  
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    f1 = 2.0 * precision * recall / (precision + recall + 1e-8)
+    return float(precision.item()), float(recall.item()), float(f1.item())
 
 def initialize_models_and_optimizers(cfg, accelerator, weight_dtype):
     """Initialize models and optimizers"""
@@ -88,9 +112,16 @@ def initialize_models_and_optimizers(cfg, accelerator, weight_dtype):
 
     model_dict['net'] = Net(model_dict['unet'])
 
-    model_dict['wav2vec'] = WhisperModel.from_pretrained(cfg.whisper_path).to(
-        device="cuda", dtype=weight_dtype).eval()
-    model_dict['wav2vec'].requires_grad_(False)
+    # 根据配置选择训练音频后端。  
+    audio_backend = getattr(cfg, "audio_backend", "whisper")
+    if audio_backend == "whisper":
+        model_dict['wav2vec'] = WhisperModel.from_pretrained(cfg.whisper_path).to(
+            device=accelerator.device, dtype=weight_dtype).eval()
+        model_dict['wav2vec'].requires_grad_(False)
+    else:
+        # 非 whisper 后端使用通用 mel 路径，不加载 Whisper 编码器。  
+        model_dict['wav2vec'] = None
+        logger.info(f"audio_backend={audio_backend}, using generic mel training path without WhisperModel")
 
     if cfg.solver.gradient_checkpointing:
         model_dict['unet'].enable_gradient_checkpointing()
@@ -150,6 +181,8 @@ def initialize_dataloaders(cfg):
         'val_dataloader': None
     }
     
+    # 统一数据集特征提取路径配置。  
+    feature_extractor_path = getattr(cfg, "feature_extractor_path", getattr(cfg, "whisper_path", "openai/whisper-tiny"))
     dataloader_dict['train_dataset'] = PortraitDataset(cfg={
         'image_size': cfg.data.image_size,
         'T': cfg.data.n_sample_frames,
@@ -158,7 +191,8 @@ def initialize_dataloaders(cfg):
         "contorl_face_min_size": cfg.data.contorl_face_min_size,
         "dataset_key": cfg.data.dataset_key,
         "padding_pixel_mouth": cfg.padding_pixel_mouth,
-        "whisper_path": cfg.whisper_path,
+        "feature_extractor_path": feature_extractor_path,
+        "whisper_path": feature_extractor_path,  # 兼容旧字段。  
         "min_face_size": cfg.data.min_face_size,
         "cropping_jaw2edge_margin_mean": cfg.cropping_jaw2edge_margin_mean,
         "cropping_jaw2edge_margin_std": cfg.cropping_jaw2edge_margin_std,
@@ -181,7 +215,8 @@ def initialize_dataloaders(cfg):
         "contorl_face_min_size": cfg.data.contorl_face_min_size,
         "dataset_key": cfg.data.dataset_key,
         "padding_pixel_mouth": cfg.padding_pixel_mouth,
-        "whisper_path": cfg.whisper_path,
+        "feature_extractor_path": feature_extractor_path,
+        "whisper_path": feature_extractor_path,  # 兼容旧字段。  
         "min_face_size": cfg.data.min_face_size,
         "cropping_jaw2edge_margin_mean": cfg.cropping_jaw2edge_margin_mean,
         "cropping_jaw2edge_margin_std": cfg.cropping_jaw2edge_margin_std,
@@ -292,9 +327,19 @@ def validation(
     global_step,
     weight_dtype,
     syncnet_score=1,
+    return_metrics=False,
 ):
     """Validation function for model evaluation"""
-    net.eval()  # Set the model to evaluation mode
+    # 设置模型为验证模式。  
+    net.eval()
+    # 初始化验证指标字典。  
+    metrics = {
+        "val_l1_train": None,
+        "val_l1_infer": None,
+        "val_precision": None,
+        "val_recall": None,
+        "val_f1": None,
+    }
     for batch in val_dataloader:
         # The same ref_latents
         ref_pixel_values = batch["pixel_values_ref_img"].to(weight_dtype).to(
@@ -322,6 +367,18 @@ def validation(
         image_pred_infer = get_image_pred(
             ref_pixel_values, ref_pixel_values, audio_prompts, vae, net, weight_dtype)
 
+        # 计算验证损失指标（使用单批次快速验证）。  
+        gt_frames = rearrange(pixel_values, 'b f c h w -> (b f) c h w').float()
+        infer_frames = rearrange(ref_pixel_values, 'b f c h w -> (b f) c h w').float()
+        metrics["val_l1_train"] = F.l1_loss(image_pred_train.float(), gt_frames).item()
+        metrics["val_l1_infer"] = F.l1_loss(image_pred_infer.float(), infer_frames).item()
+        # 计算口型区域二值分类指标。  
+        mouth_mask = rearrange(batch["pixel_values_face_mask"], "b f c h w -> (b f) c h w").to(gt_frames.device).float()
+        precision, recall, f1 = _compute_binary_prf1(image_pred_train.float(), gt_frames, mouth_mask, threshold=0.5)
+        metrics["val_precision"] = precision
+        metrics["val_recall"] = recall
+        metrics["val_f1"] = f1
+
         process_and_save_images(
             batch,
             image_pred_train,
@@ -334,4 +391,8 @@ def validation(
         )
         # only infer 1 image in validation
         break
-    net.train()  # Set the model back to training mode
+    # 恢复训练模式。  
+    net.train()
+    # 根据开关返回验证指标。  
+    if return_metrics:
+        return metrics

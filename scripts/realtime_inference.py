@@ -318,9 +318,17 @@ if __name__ == "__main__":
     parser.add_argument("--ffmpeg_path", type=str, default="./ffmpeg-4.4-amd64-static/", help="Path to ffmpeg executable")
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use")
     parser.add_argument("--vae_type", type=str, default="sd-vae", help="Type of VAE model")
+    parser.add_argument("--vae_path", type=str, default=None, help="Optional explicit VAE model path")
     parser.add_argument("--unet_config", type=str, default="./models/musetalk/musetalk.json", help="Path to UNet configuration file")
     parser.add_argument("--unet_model_path", type=str, default="./models/musetalk/pytorch_model.bin", help="Path to UNet model weights")
     parser.add_argument("--whisper_dir", type=str, default="./models/whisper", help="Directory containing Whisper model")
+    parser.add_argument(
+        "--audio_encoder",
+        type=str,
+        default="whisper",
+        choices=["whisper", "campplus", "sensevoice"],
+        help="Audio encoder backend",
+    )
     parser.add_argument("--inference_config", type=str, default="configs/inference/realtime.yaml")
     parser.add_argument("--bbox_shift", type=int, default=0, help="Bounding box shift value")
     parser.add_argument("--result_dir", default='./results', help="Directory for output results")
@@ -339,6 +347,8 @@ if __name__ == "__main__":
                        action="store_true",
                        help="Whether skip saving images for better generation speed calculation",
                        )
+    parser.add_argument("--use_vae_adapter", action="store_true", help="Enable VAE latent channel adapter")
+    parser.add_argument("--adapter_target_channels", type=int, default=8, help="Target channels for VAE adapter")
 
     args = parser.parse_args()
 
@@ -358,8 +368,12 @@ if __name__ == "__main__":
     vae, unet, pe = load_all_model(
         unet_model_path=args.unet_model_path,
         vae_type=args.vae_type,
+        vae_path=args.vae_path,
         unet_config=args.unet_config,
-        device=device
+        device=device,
+        use_float16=True,
+        use_adapter=args.use_vae_adapter,
+        target_channels=args.adapter_target_channels,
     )
     timesteps = torch.tensor([0], device=device)
 
@@ -367,12 +381,20 @@ if __name__ == "__main__":
     vae.vae = vae.vae.half().to(device)
     unet.model = unet.model.half().to(device)
 
-    # Initialize audio processor and Whisper model
-    audio_processor = AudioProcessor(feature_extractor_path=args.whisper_dir)
+    # Initialize audio processor and optional Whisper model
+    audio_processor = AudioProcessor(
+        feature_extractor_path=args.whisper_dir,
+        encoder_type=args.audio_encoder,
+        device=str(device),
+        use_float16=True,
+    )
     weight_dtype = unet.model.dtype
-    whisper = WhisperModel.from_pretrained(args.whisper_dir)
-    whisper = whisper.to(device=device, dtype=weight_dtype).eval()
-    whisper.requires_grad_(False)
+    if args.audio_encoder == "whisper":
+        whisper = WhisperModel.from_pretrained(args.whisper_dir)
+        whisper = whisper.to(device=device, dtype=weight_dtype).eval()
+        whisper.requires_grad_(False)
+    else:
+        whisper = None
 
     # Initialize face parser with configurable parameters based on version
     if args.version == "v15":

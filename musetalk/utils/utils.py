@@ -15,11 +15,22 @@ from musetalk.models.unet import UNet,PositionalEncoding
 def load_all_model(
     unet_model_path=os.path.join("models", "musetalkV15", "unet.pth"),
     vae_type="sd-vae",
+    vae_path=None,
     unet_config=os.path.join("models", "musetalkV15", "musetalk.json"),
     device=None,
+    use_float16=False,
+    use_adapter=False,
+    target_channels=8,
 ):
+    # 解析 VAE 权重路径，优先使用显式传入路径。  
+    resolved_vae_path = vae_path if vae_path is not None else os.path.join("models", vae_type)
     vae = VAE(
-        model_path = os.path.join("models", vae_type),
+        model_path=resolved_vae_path,
+        vae_type=vae_type,
+        use_float16=use_float16,
+        device=device,
+        use_adapter=use_adapter,
+        target_channels=target_channels,
     )
     print(f"load unet model from {unet_model_path}")
     unet = UNet(
@@ -180,9 +191,31 @@ def process_audio_features(cfg, batch, wav2vec, bsz, num_frames, weight_dtype):
             (cfg.data.audio_padding_length_left +
              cfg.data.audio_padding_length_right + 1)
         audio_feats = batch['audio_feature'].to(weight_dtype)
-        audio_feats = wav2vec.encoder(
-            audio_feats, output_hidden_states=True).hidden_states
-        audio_feats = torch.stack(audio_feats, dim=2).to(weight_dtype)  # [B, T, 10, 5, 384]
+        # Whisper 后端：通过 encoder hidden states 构建特征。  
+        if wav2vec is not None:
+            audio_feats = wav2vec.encoder(
+                audio_feats, output_hidden_states=True).hidden_states
+            audio_feats = torch.stack(audio_feats, dim=2).to(weight_dtype)  # [B, T, 5, 384]
+        else:
+            # 通用后端：将 mel 特征 [B, 80, L] 投影到 [B, L, 5, 384]。  
+            if audio_feats.ndim != 3:
+                raise ValueError(f"Expected audio_feature ndim=3, got {audio_feats.ndim}")
+            # 变换到时间优先布局。  
+            audio_feats = audio_feats.transpose(1, 2).contiguous()  # [B, L, 80]
+            # 右侧补零到 384 维。  
+            if audio_feats.shape[-1] < 384:
+                pad = torch.zeros(
+                    audio_feats.shape[0],
+                    audio_feats.shape[1],
+                    384 - audio_feats.shape[-1],
+                    device=audio_feats.device,
+                    dtype=audio_feats.dtype,
+                )
+                audio_feats = torch.cat([audio_feats, pad], dim=-1)
+            elif audio_feats.shape[-1] > 384:
+                audio_feats = audio_feats[..., :384]
+            # 扩展“层维”到 5，兼容下游切片逻辑。  
+            audio_feats = audio_feats.unsqueeze(2).repeat(1, 1, 5, 1)  # [B, L, 5, 384]
 
         start_ts = batch['audio_offset']
         step_ts = batch['audio_step']

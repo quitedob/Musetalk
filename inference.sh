@@ -6,19 +6,26 @@
 # To run v1.5 inference: sh inference.sh v1.5 [normal|realtime]
 
 # Check if the correct number of arguments is provided
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <version> <mode>"
-    echo "Example: $0 v1.0 normal or $0 v1.5 realtime"
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo "Usage: $0 <version> <mode> [audio_encoder]"
+    echo "Example: $0 v1.5 normal sensevoice"
     exit 1
 fi
 
 # Get the version and mode from the user input
 version=$1
 mode=$2
+audio_encoder=${3:-whisper}
 
 # Validate mode
 if [ "$mode" != "normal" ] && [ "$mode" != "realtime" ]; then
     echo "Invalid mode specified. Please use 'normal' or 'realtime'."
+    exit 1
+fi
+
+# Validate audio encoder
+if [ "$audio_encoder" != "whisper" ] && [ "$audio_encoder" != "campplus" ] && [ "$audio_encoder" != "sensevoice" ]; then
+    echo "Invalid audio_encoder specified. Please use 'whisper', 'campplus', or 'sensevoice'."
     exit 1
 fi
 
@@ -59,7 +66,8 @@ cmd_args="--inference_config $config_path \
     --result_dir $result_dir \
     --unet_model_path $unet_model_path \
     --unet_config $unet_config \
-    --version $version_arg"
+    --version $version_arg \
+    --audio_encoder $audio_encoder"
 
 # Add realtime-specific arguments if in realtime mode
 if [ "$mode" = "realtime" ]; then

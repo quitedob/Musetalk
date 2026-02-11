@@ -4,6 +4,8 @@ import logging
 import math
 import os
 import time
+import csv
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,6 +35,7 @@ from musetalk.utils.utils import (
     save_models
 )
 from musetalk.loss.basic_loss import set_requires_grad
+from musetalk.loss.pmf_loss import PixelSpacePMFLoss
 from musetalk.loss.syncnet import get_sync_loss
 from musetalk.utils.training_utils import (
     initialize_models_and_optimizers,
@@ -46,6 +49,41 @@ from musetalk.utils.training_utils import (
 logger = get_logger(__name__, log_level="INFO")
 warnings.filterwarnings("ignore")
 check_min_version("0.10.0.dev0")
+
+
+def _plot_results_curve(results_csv_path, output_png_path):
+    """从 results.csv 绘制训练曲线图。"""
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+    # 读取 CSV 内容。  
+    rows = []
+    with open(results_csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    if len(rows) == 0:
+        return
+    # 提取主曲线。  
+    steps = [int(r["global_step"]) for r in rows]
+    train_loss = [float(r["epoch_avg_total_loss"]) for r in rows]
+    val_l1 = [float(r["val_l1_train"]) if r["val_l1_train"] not in ("", "None", "nan") else float("nan") for r in rows]
+    val_f1 = [float(r["val_f1"]) if r["val_f1"] not in ("", "None", "nan") else float("nan") for r in rows]
+    # 绘图并保存。  
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].plot(steps, train_loss, label="epoch_avg_total_loss")
+    axes[0].plot(steps, val_l1, label="val_l1_train")
+    axes[0].set_title("Loss Curve")
+    axes[0].set_xlabel("global_step")
+    axes[0].legend()
+    axes[1].plot(steps, val_f1, label="val_f1")
+    axes[1].set_title("F1 Curve")
+    axes[1].set_xlabel("global_step")
+    axes[1].legend()
+    plt.tight_layout()
+    plt.savefig(output_png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 def main(cfg):
     exp_name = cfg.exp_name
@@ -111,6 +149,57 @@ def main(cfg):
             init_kwargs={"mlflow": {"run_name": run_time}},
         )
 
+    # 初始化结果记录文件路径。  
+    results_csv_path = os.path.join(save_dir, "results.csv")
+    best_model_path = os.path.join(save_dir, "best_unet.pt")
+    best_meta_path = os.path.join(save_dir, "best_metrics.json")
+    latest_metrics_path = os.path.join(save_dir, "latest_metrics.json")
+    results_curve_path = os.path.join(save_dir, "results_curve.png")
+    # 初始化最佳验证指标。  
+    best_val_l1 = float("inf")
+    # 记录最新验证指标。  
+    latest_val_metrics = {
+        "val_l1_train": None,
+        "val_l1_infer": None,
+        "val_precision": None,
+        "val_recall": None,
+        "val_f1": None,
+    }
+    # 初始化早停参数。  
+    early_stop_cfg = getattr(cfg, "early_stopping", None)
+    early_stop_enabled = bool(getattr(early_stop_cfg, "enabled", False)) if early_stop_cfg is not None else False
+    early_stop_metric = str(getattr(early_stop_cfg, "metric", "val_l1_train")) if early_stop_cfg is not None else "val_l1_train"
+    early_stop_mode = str(getattr(early_stop_cfg, "mode", "min")) if early_stop_cfg is not None else "min"
+    early_stop_patience = int(getattr(early_stop_cfg, "patience", 10)) if early_stop_cfg is not None else 10
+    early_stop_min_delta = float(getattr(early_stop_cfg, "min_delta", 0.0)) if early_stop_cfg is not None else 0.0
+    early_stop_bad_count = 0
+    early_stop_best = float("inf") if early_stop_mode == "min" else -float("inf")
+    should_stop_early = False
+
+    # 初始化 CSV 表头。  
+    if accelerator.is_main_process and not os.path.exists(results_csv_path):
+        with open(results_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "epoch",
+                    "global_step",
+                    "epoch_avg_total_loss",
+                    "epoch_avg_l1_loss",
+                    "epoch_avg_vgg_loss",
+                    "epoch_avg_sync_loss",
+                    "epoch_avg_mse_loss",
+                    "epoch_avg_pmf_loss",
+                    "val_l1_train",
+                    "val_l1_infer",
+                    "val_precision",
+                    "val_recall",
+                    "val_f1",
+                    "best_val_l1_so_far",
+                ],
+            )
+            writer.writeheader()
+
     # Calculate total batch size
     total_batch_size = (
         cfg.data.train_bs
@@ -157,7 +246,16 @@ def main(cfg):
     print("log type of models")
     print("unet", model_dict['unet'].dtype)
     print("vae", model_dict['vae'].dtype)
-    print("wav2vec", model_dict['wav2vec'].dtype)
+    if model_dict['wav2vec'] is not None:
+        print("wav2vec", model_dict['wav2vec'].dtype)
+    else:
+        print("wav2vec", "None (generic mel backend)")
+    # 初始化可选 pMF 损失。  
+    pmf_weight = float(getattr(cfg.loss_params, "pmf_loss", 0.0))
+    pmf_loss_fn = PixelSpacePMFLoss().to(accelerator.device) if pmf_weight > 0 else None
+    # 初始化可选 MSE 损失。  
+    mse_weight = float(getattr(cfg.loss_params, "mse_loss", 0.0))
+    mse_loss_fn = nn.MSELoss(reduction="mean") if mse_weight > 0 else None
 
     def get_ganloss_weight(step):
         """Calculate GAN loss weight based on training step"""
@@ -185,7 +283,17 @@ def main(cfg):
         gan_loss_accum_mouth = 0.0
         fm_loss_accum = 0.0
         sync_loss_accum = 0.0
+        mse_loss_accum = 0.0
+        pmf_loss_accum = 0.0
         adapted_weight_accum = 0.0
+        # 记录 epoch 级平均指标。  
+        epoch_total_loss_sum = 0.0
+        epoch_l1_loss_sum = 0.0
+        epoch_vgg_loss_sum = 0.0
+        epoch_sync_loss_sum = 0.0
+        epoch_mse_loss_sum = 0.0
+        epoch_pmf_loss_sum = 0.0
+        epoch_step_count = 0
 
         t_data_start = time.time()
         for step, batch in enumerate(dataloader_dict['train_dataloader']):
@@ -322,6 +430,18 @@ def main(cfg):
             l1_loss = loss_dict['L1_loss'](frames, image_pred)
             l1_loss_accum += l1_loss.item()
             loss = cfg.loss_params.l1_loss * l1_loss * adapted_weight
+            # 计算可选 MSE 损失。  
+            if mse_loss_fn is not None and mse_weight > 0:
+                mse_loss = mse_loss_fn(image_pred, frames)
+                mse_loss_accum += mse_loss.item()
+                epoch_mse_loss_sum += mse_loss.item()
+                loss += mse_weight * mse_loss * adapted_weight
+            # 计算可选 pMF 损失（像素空间）。  
+            if pmf_loss_fn is not None and pmf_weight > 0:
+                pmf_loss = pmf_loss_fn(image_pred, frames)
+                pmf_loss_accum += pmf_loss.item()
+                loss += pmf_weight * pmf_loss * adapted_weight
+                epoch_pmf_loss_sum += pmf_loss.item()
 
             # Process mouth GAN loss if enabled
             if cfg.loss_params.mouth_gan_loss > 0:
@@ -421,6 +541,13 @@ def main(cfg):
             # Backward pass
             avg_loss = accelerator.gather(loss.repeat(cfg.data.train_bs)).mean()
             train_loss += avg_loss.item()
+            epoch_total_loss_sum += avg_loss.item()
+            epoch_l1_loss_sum += l1_loss.item()
+            if cfg.loss_params.vgg_loss > 0:
+                epoch_vgg_loss_sum += loss_IN.item()
+            if cfg.loss_params.sync_loss > 0:
+                epoch_sync_loss_sum += sync_loss.item()
+            epoch_step_count += 1
             accelerator.backward(loss)
 
             # Train discriminator if GAN loss is enabled
@@ -483,6 +610,8 @@ def main(cfg):
                     "gan_loss": gan_loss_accum,
                     "fm_loss": fm_loss_accum,
                     "sync_loss": sync_loss_accum,
+                    "mse_loss": mse_loss_accum,
+                    "pmf_loss": pmf_loss_accum,
                     "adapted_weight": adapted_weight_accum,
                     "lr": model_dict['lr_scheduler'].get_last_lr()[0],
                 }, step=global_step)
@@ -494,6 +623,8 @@ def main(cfg):
                 gan_loss_accum = 0.0
                 fm_loss_accum = 0.0
                 sync_loss_accum = 0.0
+                mse_loss_accum = 0.0
+                pmf_loss_accum = 0.0
                 adapted_weight_accum = 0.0
                 train_loss_D = 0.0
                 train_loss_D_mouth = 0.0
@@ -501,7 +632,7 @@ def main(cfg):
                 # Run validation if needed
                 if global_step % cfg.val_freq == 0 or global_step == 10:
                     try:
-                        validation(
+                        val_metrics = validation(
                             cfg,
                             dataloader_dict['val_dataloader'],
                             model_dict['net'],
@@ -512,7 +643,73 @@ def main(cfg):
                             global_step,
                             weight_dtype,
                             syncnet_score=adapted_weight,
+                            return_metrics=True,
                         )
+                        # 记录验证指标并写入日志。  
+                        if isinstance(val_metrics, dict):
+                            latest_val_metrics = val_metrics
+                            accelerator.log(
+                                {
+                                    "val_l1_train": val_metrics.get("val_l1_train", 0.0),
+                                    "val_l1_infer": val_metrics.get("val_l1_infer", 0.0),
+                                    "val_precision": val_metrics.get("val_precision", 0.0),
+                                    "val_recall": val_metrics.get("val_recall", 0.0),
+                                    "val_f1": val_metrics.get("val_f1", 0.0),
+                                },
+                                step=global_step,
+                            )
+                            # 每次验证都写最新指标文件。  
+                            if accelerator.is_main_process:
+                                with open(latest_metrics_path, "w", encoding="utf-8") as f:
+                                    json.dump(
+                                        {
+                                            "global_step": int(global_step),
+                                            "epoch": int(epoch),
+                                            "metrics": latest_val_metrics,
+                                        },
+                                        f,
+                                        ensure_ascii=False,
+                                        indent=2,
+                                    )
+                            # 主进程保存当前最佳模型。  
+                            cur_val_l1 = val_metrics.get("val_l1_train", None)
+                            if (
+                                accelerator.is_main_process
+                                and cur_val_l1 is not None
+                                and cur_val_l1 < best_val_l1
+                            ):
+                                best_val_l1 = cur_val_l1
+                                unwarp_net = accelerator.unwrap_model(model_dict['net'])
+                                torch.save(unwarp_net.unet.state_dict(), best_model_path)
+                                with open(best_meta_path, "w", encoding="utf-8") as f:
+                                    json.dump(
+                                        {
+                                            "best_val_l1_train": float(best_val_l1),
+                                            "global_step": int(global_step),
+                                            "epoch": int(epoch),
+                                            "val_metrics": latest_val_metrics,
+                                        },
+                                        f,
+                                        ensure_ascii=False,
+                                        indent=2,
+                                    )
+                            # 早停判定。  
+                            monitored_val = val_metrics.get(early_stop_metric, None)
+                            if early_stop_enabled and monitored_val is not None:
+                                if early_stop_mode == "min":
+                                    improved = monitored_val < (early_stop_best - early_stop_min_delta)
+                                else:
+                                    improved = monitored_val > (early_stop_best + early_stop_min_delta)
+                                if improved:
+                                    early_stop_best = monitored_val
+                                    early_stop_bad_count = 0
+                                else:
+                                    early_stop_bad_count += 1
+                                    if early_stop_bad_count >= early_stop_patience:
+                                        should_stop_early = True
+                                        logger.info(
+                                            f"Early stopping triggered: metric={early_stop_metric}, value={monitored_val}, bad_count={early_stop_bad_count}"
+                                        )
                     except Exception as e:
                         print(f"An error occurred during validation: {e}")
 
@@ -552,6 +749,8 @@ def main(cfg):
 
             if global_step >= cfg.solver.max_train_steps:
                 break
+            if should_stop_early:
+                break
 
         # Save model after each epoch
         if (epoch + 1) % cfg.save_model_epoch_interval == 0:
@@ -569,7 +768,53 @@ def main(cfg):
                 print(f"Error when saving model in step {global_step}:", e)
         accelerator.wait_for_everyone()
 
+        # 每个 epoch 结束后写入结果 CSV。  
+        if accelerator.is_main_process:
+            divisor = max(1, epoch_step_count)
+            with open(results_csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "epoch",
+                        "global_step",
+                        "epoch_avg_total_loss",
+                        "epoch_avg_l1_loss",
+                        "epoch_avg_vgg_loss",
+                        "epoch_avg_sync_loss",
+                        "epoch_avg_pmf_loss",
+                        "val_l1_train",
+                        "val_l1_infer",
+                        "best_val_l1_so_far",
+                    ],
+                )
+                writer.writerow(
+                    {
+                        "epoch": int(epoch),
+                        "global_step": int(global_step),
+                        "epoch_avg_total_loss": float(epoch_total_loss_sum / divisor),
+                        "epoch_avg_l1_loss": float(epoch_l1_loss_sum / divisor),
+                        "epoch_avg_vgg_loss": float(epoch_vgg_loss_sum / divisor),
+                        "epoch_avg_sync_loss": float(epoch_sync_loss_sum / divisor),
+                        "epoch_avg_mse_loss": float(epoch_mse_loss_sum / divisor),
+                        "epoch_avg_pmf_loss": float(epoch_pmf_loss_sum / divisor),
+                        "val_l1_train": latest_val_metrics.get("val_l1_train", None),
+                        "val_l1_infer": latest_val_metrics.get("val_l1_infer", None),
+                        "val_precision": latest_val_metrics.get("val_precision", None),
+                        "val_recall": latest_val_metrics.get("val_recall", None),
+                        "val_f1": latest_val_metrics.get("val_f1", None),
+                        "best_val_l1_so_far": float(best_val_l1) if best_val_l1 < float("inf") else None,
+                    }
+                )
+        # 每个 epoch 后更新曲线图。  
+        if accelerator.is_main_process:
+            _plot_results_curve(results_csv_path, results_curve_path)
+        # 触发早停则结束训练。  
+        if should_stop_early:
+            break
+
     # End training
+    if accelerator.is_main_process:
+        _plot_results_curve(results_csv_path, results_curve_path)
     accelerator.end_training()
 
 if __name__ == "__main__":

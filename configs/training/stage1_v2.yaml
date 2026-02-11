@@ -55,6 +55,7 @@ data:
 # Loss Configuration - NEW: pMF replaces GAN
 loss_params:
   l1_loss: 1.0
+  mse_loss: 0.0  # NEW: optional MSE loss
   pmf_loss: 0.1  # NEW: Pixel MeanFlow loss
   vgg_loss: 0.01
   vgg_layer_weight: [1, 1, 1, 1, 1]
@@ -109,5 +110,13 @@ total_limit: 10
 save_model_epoch_interval: 250000
 checkpointing_steps: 10000
 val_freq: 2000
+
+# Early stopping
+early_stopping:
+  enabled: true
+  metric: "val_l1_train"
+  mode: "min"
+  patience: 20
+  min_delta: 0.0001
 
 seed: 41

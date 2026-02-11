@@ -1,0 +1,8 @@
+# Cam++ 音频编码器配置。  
+encoder_type: "campplus"  # 音频后端类型。  
+device: "cuda"  # 运行设备。  
+model_name: "iic/speech_campplus_sv_zh_en_16k-common_advanced"  # Cam++ 模型名。  
+use_learnable_adapter: true  # 是否启用可学习维度适配器。  
+target_dim: 384  # 输出目标维度。  
+audio_padding_length_left: 2  # 左侧上下文窗口。  
+audio_padding_length_right: 2  # 右侧上下文窗口。  

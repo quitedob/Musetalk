@@ -403,6 +403,13 @@ parser.add_argument("--ip", type=str, default="127.0.0.1", help="IP address to b
 parser.add_argument("--port", type=int, default=7860, help="Port to bind to")
 parser.add_argument("--share", action="store_true", help="Create a public link")
 parser.add_argument("--use_float16", action="store_true", help="Use float16 for faster inference")
+parser.add_argument(
+    "--audio_encoder",
+    type=str,
+    default="whisper",
+    choices=["whisper", "campplus", "sensevoice"],
+    help="Audio encoder backend",
+)
 args = parser.parse_args()
 
 # Set data type
@@ -423,10 +430,18 @@ unet.model = unet.model.to(device)
 timesteps = torch.tensor([0], device=device)
 
 # Initialize audio processor and Whisper model
-audio_processor = AudioProcessor(feature_extractor_path="./models/whisper")
-whisper = WhisperModel.from_pretrained("./models/whisper")
-whisper = whisper.to(device=device, dtype=weight_dtype).eval()
-whisper.requires_grad_(False)
+audio_processor = AudioProcessor(
+    feature_extractor_path="./models/whisper",
+    encoder_type=args.audio_encoder,
+    device=str(device),
+    use_float16=args.use_float16,
+)
+if args.audio_encoder == "whisper":
+    whisper = WhisperModel.from_pretrained("./models/whisper")
+    whisper = whisper.to(device=device, dtype=weight_dtype).eval()
+    whisper.requires_grad_(False)
+else:
+    whisper = None
 
 
 def check_video(video):

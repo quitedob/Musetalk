@@ -78,8 +78,9 @@ class FaceDataset(Dataset):
             transforms.ToTensor(),
         ])
 
-        # Feature extractor
-        self.feature_extractor = AutoFeatureExtractor.from_pretrained(cfg['whisper_path'])
+        # 统一特征提取器路径配置（兼容 whisper_path 旧字段）。  
+        feature_extractor_path = cfg.get('feature_extractor_path', cfg.get('whisper_path', "openai/whisper-tiny"))
+        self.feature_extractor = AutoFeatureExtractor.from_pretrained(feature_extractor_path)
         self.contorl_face_min_size = cfg["contorl_face_min_size"]
         
         print("The sample method is: ", self.sample_method)

@@ -284,7 +284,7 @@ Please ensure that you set the `ffmpeg_path` to match the actual location of you
 
 ```bash
 # MuseTalk 1.5 (Recommended)
-python -m scripts.inference --inference_config configs\inference\test.yaml --result_dir results\test --unet_model_path models\musetalkV15\unet.pth --unet_config models\musetalkV15\musetalk.json --version v15 --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared\bin
+python -m scripts.inference --inference_config configs\inference\test.yaml --result_dir results\test --unet_model_path models\musetalkV15\unet.pth --unet_config models\musetalkV15\musetalk.json --version v15 --audio_encoder whisper --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared\bin
 
 # For MuseTalk 1.0, change:
 # - models\musetalkV15 -> models\musetalk
@@ -305,7 +305,7 @@ sh inference.sh v1.0 realtime
 ##### Windows Environment
 ```bash
 # MuseTalk 1.5 (Recommended)
-python -m scripts.realtime_inference --inference_config configs\inference\realtime.yaml --result_dir results\realtime --unet_model_path models\musetalkV15\unet.pth --unet_config models\musetalkV15\musetalk.json --version v15 --fps 25 --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared\bin
+python -m scripts.realtime_inference --inference_config configs\inference\realtime.yaml --result_dir results\realtime --unet_model_path models\musetalkV15\unet.pth --unet_config models\musetalkV15\musetalk.json --version v15 --audio_encoder whisper --fps 25 --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared\bin
 
 # For MuseTalk 1.0, change:
 # - models\musetalkV15 -> models\musetalk
@@ -318,6 +318,16 @@ The configuration file `configs/inference/test.yaml` contains the inference sett
 - `audio_path`: Path to the input audio file
 
 Note: For optimal results, we recommend using input videos with 25fps, which is the same fps used during model training. If your video has a lower frame rate, you can use frame interpolation or convert it to 25fps using ffmpeg.
+
+Audio encoder options:
+- `--audio_encoder whisper` (default, strongest compatibility)
+- `--audio_encoder campplus` (lightweight backend)
+- `--audio_encoder sensevoice` (Chinese-oriented backend)
+
+You can benchmark three encoders by:
+```bash
+python -m scripts.compare_audio_encoders --audio_path data/audio/eng.wav --device cuda --num_runs 5
+```
 
 Important notes for real-time inference:
 1. Set `preparation` to `True` when processing a new avatar
@@ -339,7 +349,7 @@ Both Linux and Windows users can launch the demo using the following command. Pl
 
 ```bash
 # You can remove --use_float16 for better quality, but it will increase VRAM usage and inference time
-python app.py --use_float16 --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared\bin
+python app.py --use_float16 --audio_encoder whisper --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared\bin
 ```
 
 ## Training

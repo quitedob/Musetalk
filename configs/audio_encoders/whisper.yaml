@@ -1,0 +1,7 @@
+# Whisper 音频编码器配置。  
+encoder_type: "whisper"  # 音频后端类型。  
+device: "cuda"  # 运行设备。  
+model_path: "./models/whisper"  # Whisper 模型目录。  
+feature_dim: 384  # 输出目标维度。  
+audio_padding_length_left: 2  # 左侧上下文窗口。  
+audio_padding_length_right: 2  # 右侧上下文窗口。  
