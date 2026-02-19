@@ -1,8 +1,7 @@
 hdtf:
   data_dir: "./datasets/HDTF"
   source_dir: "./datasets/HDTF/source"
-  output_dir: "./dataset/HDTF"
-  preprocess_yaml: "./configs/training/preprocess.yaml"
+  output_dir: "./datasets/HDTF/processed"
   steps:
     convert: true
     segment: true

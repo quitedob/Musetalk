@@ -1,5 +1,5 @@
 # MuseTalk 2.0 Stage 1 Training Configuration
-# Basic reconstruction with 16-channel Flux VAE
+# Basic reconstruction with Flux VAE
 
 exp_name: 'musetalk_v2_stage1'
 output_dir: './exp_out/stage1_v2/'
@@ -10,14 +10,15 @@ pretrained_model_name_or_path: "./models"
 resume_from_checkpoint: true
 padding_pixel_mouth: 10
 
-# VAE Configuration - NEW: Flux VAE
+# VAE Configuration - NEW: Flux VAE (auto-detect latent channels from model config)
 vae_type: "flux-vae"  # Options: "sd-vae", "flux-vae"
 vae_path: "./models/flux-vae"  # Path to Flux VAE weights
-latent_channels: 16  # Flux VAE uses 16 channels
+latent_channels: 32  # FLUX.2 VAE uses 32 channels
 scale_factor: 0.3611  # Flux VAE scale factor (vs 0.18215 for SD)
+shift_factor: 0.1159  # Flux VAE latent shift (0.0 for SD)
 
 # v2.0 Architecture Components
-use_adapter: true  # Channel adapter for 16ch → 8ch
+use_adapter: true  # Channel adapter for Flux latent channels -> 8ch
 use_mhc: false  # Disable in stage 1
 use_engram: false  # Disable in stage 1
 use_gated_attn: false  # Disable in stage 1
@@ -26,6 +27,8 @@ use_dsa: false  # Disable in stage 1
 # Audio Processing
 audio_backend: "whisper"  # Options: "whisper", "sensevoice"
 sensevoice_model: "FunAudioLLM/SenseVoiceSmall"
+# Reduce audio condition tokens for lighter cross-attention (0 = keep 50 tokens)
+audio_token_keep: 32
 
 # Validation
 num_images_to_keep: 8
@@ -41,7 +44,7 @@ num_backward_frames: 16
 # Data Configuration
 data:
   dataset_key: "HDTF"
-  train_bs: 16  # Reduced from 32 due to 16-channel VRAM
+  train_bs: 16  # Tune by VRAM budget for selected Flux VAE
   image_size: 256
   n_sample_frames: 1  # Single frame for stage 1
   num_workers: 8
@@ -90,7 +93,7 @@ discriminator_train_params:
 solver:
   gradient_accumulation_steps: 2  # Increased to compensate for smaller batch
   uncond_steps: 10
-  mixed_precision: 'bf16'  # Use bfloat16 for 16-channel stability
+  mixed_precision: 'bf16'  # Use bfloat16 for Flux stability
   enable_xformers_memory_efficient_attention: true
   gradient_checkpointing: true
   max_train_steps: 250000

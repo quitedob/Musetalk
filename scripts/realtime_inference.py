@@ -16,7 +16,7 @@ from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.utils import datagen
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.blending import get_image_prepare_material, get_image_blending
-from musetalk.utils.utils import load_all_model
+from musetalk.utils.utils import load_all_model, reduce_audio_tokens
 from musetalk.utils.audio_processor import AudioProcessor
 
 import shutil
@@ -270,11 +270,14 @@ class Avatar:
 
         for i, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=int(np.ceil(float(video_num) / self.batch_size)))):
             audio_feature_batch = pe(whisper_batch.to(device))
+            if args.audio_token_keep > 0:
+                audio_feature_batch = reduce_audio_tokens(audio_feature_batch, args.audio_token_keep)
             latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
 
             pred_latents = unet.model(latent_batch,
                                     timesteps,
                                     encoder_hidden_states=audio_feature_batch).sample
+            pred_latents = vae.adapt_output_latents(pred_latents)
             pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
             recon = vae.decode_latents(pred_latents)
             for res_frame in recon:
@@ -337,6 +340,7 @@ if __name__ == "__main__":
     parser.add_argument("--audio_padding_length_left", type=int, default=2, help="Left padding length for audio")
     parser.add_argument("--audio_padding_length_right", type=int, default=2, help="Right padding length for audio")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size for inference")
+    parser.add_argument("--audio_token_keep", type=int, default=0, help="Reduce audio condition tokens for faster cross-attention (0=keep all)")
     parser.add_argument("--output_vid_name", type=str, default=None, help="Name of output video file")
     parser.add_argument("--use_saved_coord", action="store_true", help='Use saved coordinates to save time')
     parser.add_argument("--saved_coord", action="store_true", help='Save coordinates for future use')
@@ -349,6 +353,12 @@ if __name__ == "__main__":
                        )
     parser.add_argument("--use_vae_adapter", action="store_true", help="Enable VAE latent channel adapter")
     parser.add_argument("--adapter_target_channels", type=int, default=8, help="Target channels for VAE adapter")
+    parser.add_argument("--use_gated_attn", action="store_true", help="Inject gated cross-attention into UNet")
+    parser.add_argument("--use_dsa", action="store_true", help="Inject sparse top-k cross-attention into UNet")
+    parser.add_argument("--dsa_topk", type=int, default=2048, help="Top-k keys for sparse cross-attention")
+    parser.add_argument("--use_mhc", action="store_true", help="Inject mHC mixers into UNet ResNet blocks")
+    parser.add_argument("--mhc_streams", type=int, default=2, help="Number of streams for mHC mixer")
+    parser.add_argument("--mhc_sinkhorn_iters", type=int, default=10, help="Sinkhorn iterations for mHC mixer")
 
     args = parser.parse_args()
 
@@ -374,6 +384,12 @@ if __name__ == "__main__":
         use_float16=True,
         use_adapter=args.use_vae_adapter,
         target_channels=args.adapter_target_channels,
+        use_gated_attn=args.use_gated_attn,
+        use_dsa=args.use_dsa,
+        dsa_topk=args.dsa_topk,
+        use_mhc=args.use_mhc,
+        mhc_streams=args.mhc_streams,
+        mhc_sinkhorn_iters=args.mhc_sinkhorn_iters,
     )
     timesteps = torch.tensor([0], device=device)
 

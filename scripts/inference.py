@@ -17,7 +17,7 @@ import sys
 from musetalk.utils.blending import get_image
 from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.audio_processor import AudioProcessor
-from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
+from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model, reduce_audio_tokens
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder
 
 def fast_check_ffmpeg():
@@ -50,6 +50,12 @@ def main(args):
         use_float16=args.use_float16,
         use_adapter=args.use_vae_adapter,
         target_channels=args.adapter_target_channels,
+        use_gated_attn=args.use_gated_attn,
+        use_dsa=args.use_dsa,
+        dsa_topk=args.dsa_topk,
+        use_mhc=args.use_mhc,
+        mhc_streams=args.mhc_streams,
+        mhc_sinkhorn_iters=args.mhc_sinkhorn_iters,
     )
     timesteps = torch.tensor([0], device=device)
 
@@ -129,14 +135,16 @@ def main(args):
             output_vid_name_concat = os.path.join(temp_dir, output_basename + "_concat.mp4")
             
             # Extract frames from source video
-            if get_file_type(video_path) == "video":
+            input_type = get_file_type(video_path)
+            save_dir_full = None
+            if input_type == "video":
                 save_dir_full = os.path.join(temp_dir, input_basename)
                 os.makedirs(save_dir_full, exist_ok=True)
                 cmd = f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"
                 os.system(cmd)
                 input_img_list = sorted(glob.glob(os.path.join(save_dir_full, '*.[jpJP][pnPN]*[gG]')))
                 fps = get_video_fps(video_path)
-            elif get_file_type(video_path) == "image":
+            elif input_type == "image":
                 input_img_list = [video_path]
                 fps = args.fps
             elif os.path.isdir(video_path):
@@ -210,9 +218,12 @@ def main(args):
             # Execute inference
             for i, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total)):
                 audio_feature_batch = pe(whisper_batch)
+                if args.audio_token_keep > 0:
+                    audio_feature_batch = reduce_audio_tokens(audio_feature_batch, args.audio_token_keep)
                 latent_batch = latent_batch.to(dtype=unet.model.dtype)
                 
                 pred_latents = unet.model(latent_batch, timesteps, encoder_hidden_states=audio_feature_batch).sample
+                pred_latents = vae.adapt_output_latents(pred_latents)
                 recon = vae.decode_latents(pred_latents)
                 for res_frame in recon:
                     res_frame_list.append(res_frame)
@@ -225,7 +236,7 @@ def main(args):
                 x1, y1, x2, y2 = bbox
                 if args.version == "v15":
                     y2 = y2 + args.extra_margin
-                    y2 = min(y2, frame.shape[0])
+                    y2 = min(y2, ori_frame.shape[0])
                 try:
                     res_frame = cv2.resize(res_frame.astype(np.uint8), (x2-x1, y2-y1))
                 except:
@@ -252,7 +263,8 @@ def main(args):
             shutil.rmtree(result_img_save_path)
             os.remove(temp_vid_path)
             
-            shutil.rmtree(save_dir_full)
+            if save_dir_full is not None and os.path.isdir(save_dir_full):
+                shutil.rmtree(save_dir_full)
             if not args.saved_coord:
                 os.remove(crop_coord_save_path)
                     
@@ -284,12 +296,19 @@ if __name__ == "__main__":
     parser.add_argument("--audio_padding_length_left", type=int, default=2, help="Left padding length for audio")
     parser.add_argument("--audio_padding_length_right", type=int, default=2, help="Right padding length for audio")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for inference")
+    parser.add_argument("--audio_token_keep", type=int, default=0, help="Reduce audio condition tokens for faster cross-attention (0=keep all)")
     parser.add_argument("--output_vid_name", type=str, default=None, help="Name of output video file")
     parser.add_argument("--use_saved_coord", action="store_true", help='Use saved coordinates to save time')
     parser.add_argument("--saved_coord", action="store_true", help='Save coordinates for future use')
     parser.add_argument("--use_float16", action="store_true", help="Use float16 for faster inference")
     parser.add_argument("--use_vae_adapter", action="store_true", help="Enable VAE latent channel adapter")
     parser.add_argument("--adapter_target_channels", type=int, default=8, help="Target channels for VAE adapter")
+    parser.add_argument("--use_gated_attn", action="store_true", help="Inject gated cross-attention into UNet")
+    parser.add_argument("--use_dsa", action="store_true", help="Inject sparse top-k cross-attention into UNet")
+    parser.add_argument("--dsa_topk", type=int, default=2048, help="Top-k keys for sparse cross-attention")
+    parser.add_argument("--use_mhc", action="store_true", help="Inject mHC mixers into UNet ResNet blocks")
+    parser.add_argument("--mhc_streams", type=int, default=2, help="Number of streams for mHC mixer")
+    parser.add_argument("--mhc_sinkhorn_iters", type=int, default=10, help="Sinkhorn iterations for mHC mixer")
     parser.add_argument("--parsing_mode", default='jaw', help="Face blending parsing mode")
     parser.add_argument("--left_cheek_width", type=int, default=90, help="Width of left cheek region")
     parser.add_argument("--right_cheek_width", type=int, default=90, help="Width of right cheek region")

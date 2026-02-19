@@ -25,18 +25,18 @@
  ├──────────────────┼──────────┼────────────┼─────────────┼────────────────────────────────────────────────┼──────────────────────────────┤
  │ SD-VAE (current) │ 4        │ f8         │ 1:48        │ Low VRAM, fast                                 │ Loses high-frequency details │
  └──────────────────┴──────────┴────────────┴─────────────┴────────────────────────────────────────────────┴──────────────────────────────┘
- Recommendation: Flux.1 VAE - best texture reconstruction quality, open source, proven results
+Recommendation: Flux2 VAE - best texture reconstruction quality, open source, proven results
 
  Implementation Strategy
 
  Step 1.1: Download and Integrate Flux VAE
 
  # Location: musetalk/models/vae.py
- # Download: https://huggingface.co/black-forest-labs/FLUX.1-dev
+# Project: https://github.com/black-forest-labs/flux2
 
  from diffusers import AutoencoderKL
  # Flux VAE uses 16 channels instead of 4
- vae = AutoencoderKL.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="vae")
+vae = AutoencoderKL.from_pretrained("black-forest-labs/flux2", subfolder="vae")
 
  Step 1.2: Create Channel Adapter Layer
 

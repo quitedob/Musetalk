@@ -10,8 +10,6 @@ import decord
 import json
 import cv2
 from musetalk.utils.face_detection import FaceAlignment,LandmarksType
-from mmpose.apis import inference_topdown, init_model
-from mmpose.structures import merge_data_samples
 import sys
 
 def fast_check_ffmpeg():
@@ -26,7 +24,7 @@ if not fast_check_ffmpeg():
     print("Adding ffmpeg to PATH")
     # Choose path separator based on operating system
     path_separator = ';' if sys.platform == 'win32' else ':'
-    os.environ["PATH"] = f"{args.ffmpeg_path}{path_separator}{os.environ['PATH']}"
+    os.environ["PATH"] = f"{ffmpeg_path}{path_separator}{os.environ['PATH']}"
     if not fast_check_ffmpeg():
         print("Warning: Unable to find ffmpeg, please ensure ffmpeg is properly installed")
 
@@ -41,6 +39,12 @@ class AnalyzeFace:
         checkpoint_file (str): Path to the mmpose model checkpoint file.
         """
         self.device = device
+        # Lazy import to avoid blocking module import when only convert/segment/audio are used.
+        from mmpose.apis import inference_topdown, init_model
+        from mmpose.structures import merge_data_samples
+
+        self._inference_topdown = inference_topdown
+        self._merge_data_samples = merge_data_samples
         self.dwpose = init_model(config_file, checkpoint_file, device=self.device)
         self.facedet = FaceAlignment(LandmarksType._2D, flip_input=False, device=self.device)
 
@@ -63,8 +67,8 @@ class AnalyzeFace:
                 raise ValueError("Input image must have shape (1, H, W, C)")
             
             bbox = self.facedet.get_detections_for_batch(np.asarray(im))
-            results = inference_topdown(self.dwpose, np.asarray(im)[0])
-            results = merge_data_samples(results)
+            results = self._inference_topdown(self.dwpose, np.asarray(im)[0])
+            results = self._merge_data_samples(results)
             keypoints = results.pred_instances.keypoints
             face_land_mark= keypoints[0][23:91]
             face_land_mark = face_land_mark.astype(np.int32)
@@ -186,6 +190,7 @@ def save_list_to_file(file_path: str, data_list: List[str]) -> None:
     None
     """
     with open(file_path, 'w') as file:
+        file.write("file_name\n")
         for item in data_list:
             file.write(f"{item}\n")
 

@@ -18,6 +18,7 @@ from musetalk.data import audio
 from musetalk.utils.audio_utils import ensure_wav
 
 syncnet_mel_step_size = math.ceil(16 / 5 * 16)  # latentsync
+syncnet_required_frames = math.ceil(syncnet_mel_step_size / 80.0 * 25.0)
 
 
 class FaceDataset(Dataset):
@@ -43,11 +44,11 @@ class FaceDataset(Dataset):
         for list_path, repeat_time in zip(list_paths, repeats):
             with open(list_path, 'r') as f:
                 num = 0
-                f.readline()  # Skip header line
-                for line in f.readlines():
-                    line_info = line.strip()
-                    meta = line_info.split()
-                    meta = meta[0]
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+                if lines and lines[0].lower() in {"file_name", "filename", "path"}:
+                    lines = lines[1:]
+                for line_info in lines:
+                    meta = line_info.split()[0]
                     meta_paths.extend([os.path.join(root_path, meta)] * repeat_time)
                     num += 1
                 print(f'{list_path}: {num} x {repeat_time} = {num * repeat_time} samples')
@@ -62,6 +63,7 @@ class FaceDataset(Dataset):
         self.top_k_ratio = cfg['top_k_ratio']
         self.max_attempts = 200
         self.padding_pixel_mouth = cfg['padding_pixel_mouth']
+        self.syncnet_required_frames = syncnet_required_frames
         
         # Cropping related parameters
         self.crop_type = cfg['crop_type']
@@ -171,6 +173,10 @@ class FaceDataset(Dataset):
         Returns:
             tuple: (Audio features, start index)
         """
+        if isinstance(wav_path, str) and wav_path.lower().endswith(".mp4"):
+            wav_candidate = os.path.splitext(wav_path)[0] + ".wav"
+            if os.path.exists(wav_candidate):
+                wav_path = wav_candidate
         if not os.path.exists(wav_path):
             return None
         wav_path_converted = ensure_wav(wav_path)
@@ -206,6 +212,10 @@ class FaceDataset(Dataset):
         Returns:
             tuple: (Mel spectrogram, start index)
         """
+        if isinstance(wav_path, str) and wav_path.lower().endswith(".mp4"):
+            wav_candidate = os.path.splitext(wav_path)[0] + ".wav"
+            if os.path.exists(wav_candidate):
+                wav_path = wav_candidate
         if not os.path.exists(wav_path):
             return None
 
@@ -325,10 +335,15 @@ class FaceDataset(Dataset):
             s = 0
             e = meta_data["frames"]
             len_valid_clip = e - s
+            step = 1
 
-            if len_valid_clip < T * 10:
+            min_clip_frames = max(T * step, self.syncnet_required_frames * step)
+            if len_valid_clip < min_clip_frames:
                 attempts += 1
-                print(f"video {video_path} has less than {T * 10} frames")
+                print(
+                    f"video {video_path} has less than {min_clip_frames} frames "
+                    f"(available={len_valid_clip})"
+                )
                 continue
 
             try:
@@ -357,8 +372,16 @@ class FaceDataset(Dataset):
                 attempts += 1
                 continue
                 
-            step = 1
-            drive_idx_start = random.randint(s, e - T * step)
+            min_required_frames = max(T * step, self.syncnet_required_frames * step)
+            max_valid_start = e - min_required_frames
+            if max_valid_start < s:
+                attempts += 1
+                print(
+                    f"video {video_path} has insufficient frames for sync window: "
+                    f"available={len_valid_clip}, required={min_required_frames}"
+                )
+                continue
+            drive_idx_start = random.randint(s, max_valid_start)
             drive_idx_list = list(
                 range(drive_idx_start, drive_idx_start + T * step, step))
             assert len(drive_idx_list) == T
@@ -471,7 +494,18 @@ class FaceDataset(Dataset):
                 time.sleep(0.1)
                 continue
             
-            mel = self.crop_audio_window(audio_feature_mel, audio_offset)
+            max_mel_start_idx = audio_feature_mel.shape[0] - syncnet_mel_step_size
+            if max_mel_start_idx < 0:
+                attempts += 1
+                print(
+                    f"video {video_path} has invalid mel spectrogram length: "
+                    f"{audio_feature_mel.shape[0]} < {syncnet_mel_step_size}"
+                )
+                continue
+            mel_start_idx = int(80.0 * (audio_offset / float(fps)))
+            mel_start_idx = max(0, min(mel_start_idx, max_mel_start_idx))
+            mel = audio_feature_mel[mel_start_idx: mel_start_idx + syncnet_mel_step_size, :]
+            audio_offset = int(round(mel_start_idx * float(fps) / 80.0))
             if mel.shape[0] != syncnet_mel_step_size:
                 attempts += 1
                 print(f"video {video_path} has invalid mel spectrogram shape: {mel.shape}, expected: {syncnet_mel_step_size}")

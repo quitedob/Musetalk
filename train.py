@@ -32,7 +32,8 @@ from musetalk.utils.utils import (
     seed_everything, 
     get_mouth_region,
     process_audio_features,
-    save_models
+    save_models,
+    reduce_audio_tokens,
 )
 from musetalk.loss.basic_loss import set_requires_grad
 from musetalk.loss.pmf_loss import PixelSpacePMFLoss
@@ -371,8 +372,16 @@ def main(cfg):
                 
                 # Encode target images
                 frames = rearrange(pixel_values_backward, 'b f c h w-> (b f) c h w')
+                vae_scaling_raw = getattr(model_dict['vae'].config, "scaling_factor", None)
+                vae_shift_raw = getattr(model_dict['vae'].config, "shift_factor", None)
+                if vae_scaling_raw is None:
+                    vae_scaling_raw = 0.3611 if getattr(cfg, "vae_type", "sd-vae") == "flux-vae" else 0.18215
+                if vae_shift_raw is None:
+                    vae_shift_raw = 0.1159 if getattr(cfg, "vae_type", "sd-vae") == "flux-vae" else 0.0
+                vae_scaling_factor = float(vae_scaling_raw)
+                vae_shift_factor = float(vae_shift_raw)
                 latents = model_dict['vae'].encode(frames).latent_dist.mode()
-                latents = latents * model_dict['vae'].config.scaling_factor
+                latents = (latents - vae_shift_factor) * vae_scaling_factor
                 latents = latents.float()
 
                 # Create masked images
@@ -380,13 +389,13 @@ def main(cfg):
                 masked_pixel_values[:, :, :, h//2:, :] = -1
                 masked_frames = rearrange(masked_pixel_values, 'b f c h w -> (b f) c h w')
                 masked_latents = model_dict['vae'].encode(masked_frames).latent_dist.mode()
-                masked_latents = masked_latents * model_dict['vae'].config.scaling_factor
+                masked_latents = (masked_latents - vae_shift_factor) * vae_scaling_factor
                 masked_latents = masked_latents.float()
 
                 # Encode reference images
                 ref_frames = rearrange(ref_pixel_values_backward, 'b f c h w-> (b f) c h w')
                 ref_latents = model_dict['vae'].encode(ref_frames).latent_dist.mode()
-                ref_latents = ref_latents * model_dict['vae'].config.scaling_factor
+                ref_latents = (ref_latents - vae_shift_factor) * vae_scaling_factor
                 ref_latents = ref_latents.float()
 
                 # Prepare face mask and audio features
@@ -403,6 +412,9 @@ def main(cfg):
                     '(b f) c h w -> (b f) (c h) w', 
                     b=bsz
                 )
+                audio_token_keep = int(getattr(cfg, "audio_token_keep", 0))
+                if audio_token_keep > 0:
+                    audio_prompts_backward = reduce_audio_tokens(audio_prompts_backward, audio_token_keep)
 
             # Apply reference dropout (currently inactive)
             dropout = nn.Dropout(p=cfg.ref_dropout_rate)
@@ -419,7 +431,7 @@ def main(cfg):
                 timesteps,
                 audio_prompts_backward,
             )
-            latents_pred = (1 / model_dict['vae'].config.scaling_factor) * latents_pred
+            latents_pred = latents_pred / vae_scaling_factor + vae_shift_factor
             image_pred = model_dict['vae'].decode(latents_pred).sample
             
             # Convert to float
@@ -781,9 +793,13 @@ def main(cfg):
                         "epoch_avg_l1_loss",
                         "epoch_avg_vgg_loss",
                         "epoch_avg_sync_loss",
+                        "epoch_avg_mse_loss",
                         "epoch_avg_pmf_loss",
                         "val_l1_train",
                         "val_l1_infer",
+                        "val_precision",
+                        "val_recall",
+                        "val_f1",
                         "best_val_l1_so_far",
                     ],
                 )

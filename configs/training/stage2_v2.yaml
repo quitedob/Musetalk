@@ -14,8 +14,9 @@ padding_pixel_mouth: 10
 # VAE Configuration - Flux VAE
 vae_type: "flux-vae"
 vae_path: "./models/flux-vae"
-latent_channels: 16
+latent_channels: 32
 scale_factor: 0.3611
+shift_factor: 0.1159
 
 # v2.0 Architecture Components - ALL ENABLED
 use_adapter: true
@@ -52,6 +53,8 @@ dsa:
 audio_backend: "sensevoice"  # Use SenseVoice in stage 2
 sensevoice_model: "FunAudioLLM/SenseVoiceSmall"
 use_vad: true
+# Reduce audio condition tokens for lighter cross-attention (0 = keep 50 tokens)
+audio_token_keep: 24
 
 # Validation
 num_images_to_keep: 8

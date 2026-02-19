@@ -12,6 +12,9 @@ def ensure_wav(input_path: str, target_path: str | None = None) -> str:
     
     if target_path is None:
         target_path = base + "_16k.wav"
+    # Reuse converted wav if it already exists.
+    if os.path.exists(target_path):
+        return target_path
     cmd = ["ffmpeg", "-y", "-i", input_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", target_path]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return target_path

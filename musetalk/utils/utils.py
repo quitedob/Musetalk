@@ -10,6 +10,7 @@ import os.path as osp
 
 from musetalk.models.vae import VAE
 from musetalk.models.unet import UNet,PositionalEncoding
+from musetalk.utils.unet_injection import inject_attention_processors, inject_mhc_mixers
 
 
 def load_all_model(
@@ -21,6 +22,12 @@ def load_all_model(
     use_float16=False,
     use_adapter=False,
     target_channels=8,
+    use_gated_attn=False,
+    use_dsa=False,
+    dsa_topk=2048,
+    use_mhc=False,
+    mhc_streams=2,
+    mhc_sinkhorn_iters=10,
 ):
     # 解析 VAE 权重路径，优先使用显式传入路径。  
     resolved_vae_path = vae_path if vae_path is not None else os.path.join("models", vae_type)
@@ -38,6 +45,28 @@ def load_all_model(
         model_path=unet_model_path,
         device=device
     )
+    attn_inj = inject_attention_processors(
+        unet.model,
+        use_gated_attn=use_gated_attn,
+        use_dsa=use_dsa,
+        dsa_topk=dsa_topk,
+    )
+    if attn_inj["enabled"]:
+        print(
+            f"Injected attention processors: cross_attn_layers={attn_inj['num_injected']} "
+            f"(gated={use_gated_attn}, dsa={use_dsa}, topk={dsa_topk})"
+        )
+    mhc_inj = inject_mhc_mixers(
+        unet.model,
+        use_mhc=use_mhc,
+        num_streams=mhc_streams,
+        sinkhorn_iters=mhc_sinkhorn_iters,
+    )
+    if mhc_inj["enabled"]:
+        print(
+            f"Injected mHC mixers: resnet_blocks={mhc_inj['num_injected']} "
+            f"(streams={mhc_streams}, sinkhorn_iters={mhc_sinkhorn_iters})"
+        )
     pe = PositionalEncoding(d_model=384)
     return vae, unet, pe
 
@@ -148,6 +177,26 @@ def get_mouth_region(frames, image_pred, pixel_values_face_mask):
 
     return mouth_real, mouth_generated
 
+
+def reduce_audio_tokens(audio_prompts: torch.Tensor, target_tokens: int) -> torch.Tensor:
+    """
+    Reduce audio condition token length to lower cross-attention compute.
+
+    Args:
+        audio_prompts: (B, T, D)
+        target_tokens: target T after downsampling
+    """
+    if target_tokens is None or target_tokens <= 0:
+        return audio_prompts
+    if audio_prompts.ndim != 3:
+        return audio_prompts
+    seq_len = audio_prompts.shape[1]
+    if target_tokens >= seq_len:
+        return audio_prompts
+    x = audio_prompts.transpose(1, 2).contiguous()
+    x = F.interpolate(x, size=target_tokens, mode='linear', align_corners=False)
+    return x.transpose(1, 2).contiguous()
+
 def get_image_pred(pixel_values,
                    ref_pixel_values,
                    audio_prompts,
@@ -162,13 +211,15 @@ def get_image_pred(pixel_values,
 
         masked_frames = rearrange(
             masked_pixel_values, 'b f c h w -> (b f) c h w')
+        vae_scaling_factor = float(vae.config.scaling_factor)
+        vae_shift_factor = float(getattr(vae.config, "shift_factor", 0.0))
         masked_latents = vae.encode(masked_frames).latent_dist.mode()
-        masked_latents = masked_latents * vae.config.scaling_factor
+        masked_latents = (masked_latents - vae_shift_factor) * vae_scaling_factor
         masked_latents = masked_latents.float()
 
         ref_frames = rearrange(ref_pixel_values, 'b f c h w-> (b f) c h w')
         ref_latents = vae.encode(ref_frames).latent_dist.mode()
-        ref_latents = ref_latents * vae.config.scaling_factor
+        ref_latents = (ref_latents - vae_shift_factor) * vae_scaling_factor
         ref_latents = ref_latents.float()
 
         input_latents = torch.cat([masked_latents, ref_latents], dim=1)
@@ -179,7 +230,7 @@ def get_image_pred(pixel_values,
             timesteps,
             audio_prompts,
         )
-        latents_pred = (1 / vae.config.scaling_factor) * latents_pred
+        latents_pred = latents_pred / vae_scaling_factor + vae_shift_factor
         image_pred = vae.decode(latents_pred).sample
         image_pred = image_pred.float()
 

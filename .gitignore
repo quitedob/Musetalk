@@ -32,6 +32,8 @@ nul
 # MuseTalk specific
 results/
 models/
+!musetalk/models/
+!musetalk/models/*.py
 dataset/
 datasets/
 exp_out/
